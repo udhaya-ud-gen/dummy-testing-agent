@@ -1,0 +1,23 @@
+{
+  "name": "dummy-testing-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/udhaya-ud-gen/dummy-testing-agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/udhaya-ud-gen/dummy-testing-agent/issues"
+  },
+  "homepage": "https://github.com/udhaya-ud-gen/dummy-testing-agent#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.1"
+  }
+}
