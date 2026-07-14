@@ -1,0 +1,91 @@
+# NOTE: this file is generated in dummy-testing-agent for review. It is
+# meant to be copied manually into udhaya-ud-gen/dummy-app's own repo at
+# .github/workflows/test-on-push.yml -- it is NOT active here.
+#
+# On every push, this workflow starts the dummy-app dev server, runs the
+# Playwright suite from dummy-testing-agent against it, and (via
+# run_pipeline.py) files a GitHub issue + "Testing log" project entry for
+# each failing test.
+name: Test on push
+
+on:
+  push:
+    branches:
+      - '**'
+
+# contents: write -- the analysis script pushes screenshot evidence commits.
+# issues: write   -- the analysis script creates GitHub issues for failures.
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Default checkout: pulls the dummy-app repo this workflow lives in,
+      # into the workspace root.
+      - name: Checkout dummy-app
+        uses: actions/checkout@v4
+
+      # Pull the testing agent (Playwright suite + analysis scripts) into a
+      # subfolder alongside the app checkout. Needs GH_PAT since this is a
+      # separate repo from the one the workflow runs in.
+      - name: Checkout dummy-testing-agent
+        uses: actions/checkout@v4
+        with:
+          repository: udhaya-ud-gen/dummy-testing-agent
+          token: ${{ secrets.GH_PAT }}
+          path: testing-agent
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # --- Start the dummy-app dev server (workspace root checkout) -------
+      - name: Install dummy-app dependencies
+        run: npm install
+
+      - name: Start dummy-app dev server
+        # Backgrounded so this step returns immediately and the workflow can
+        # move on to the readiness check below, instead of blocking on the
+        # long-running dev server process.
+        run: npm run dev &
+
+      - name: Wait for dummy-app to be reachable
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:5173 > /dev/null; then
+              echo "dummy-app is up (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for dummy-app to start... ($i/30)"
+            sleep 2
+          done
+          echo "dummy-app did not become reachable in time" >&2
+          exit 1
+
+      # --- Run the Playwright suite + failure analysis (testing-agent) ----
+      - name: Install testing-agent Node dependencies
+        working-directory: testing-agent
+        run: npm install
+
+      - name: Install Playwright browsers
+        working-directory: testing-agent
+        run: npx playwright install --with-deps
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        working-directory: testing-agent
+        run: pip install requests
+
+      - name: Run tests and log failures
+        working-directory: testing-agent
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python agent/run_pipeline.py
