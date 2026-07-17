@@ -195,10 +195,15 @@ def analyze_failure(error_message, stack_trace):
     """Rule-based root-cause analysis for a single failed test.
 
     Pattern-matches the error message and stack trace against a few common
-    Playwright failure signatures and returns a dict with root_cause,
-    severity, confidence (0-100), and suggested_fix. Anything that doesn't
-    match a known pattern falls into a generic low-confidence bucket --
-    this is a simple heuristic classifier, not exhaustive log analysis.
+    Playwright failure signatures and returns a dict with category,
+    root_cause, severity, confidence (0-100), and suggested_fix. Anything
+    that doesn't match a known pattern falls into a generic low-confidence
+    bucket -- this is a simple heuristic classifier, not exhaustive log
+    analysis.
+
+    `category` is a short tag used to build human-readable issue titles
+    (e.g. "[Network] ..." / "[UI] ..."), so it stays a small fixed set
+    rather than free text.
     """
     text = f"{error_message or ''}\n{stack_trace or ''}"
 
@@ -212,9 +217,14 @@ def analyze_failure(error_message, stack_trace):
 
     if has_timeout and waiting_for_element:
         return {
+            "category": "UI",
             "root_cause": (
                 "Likely a selector/data-testid mismatch, or the element never "
                 "rendered in time (app crash, slow network, wrong route, etc.)."
+            ),
+            "expected_result": (
+                "The target element should have appeared on the page within the "
+                "timeout window, ready to be interacted with."
             ),
             "severity": "high",
             "confidence": 75,
@@ -227,7 +237,12 @@ def analyze_failure(error_message, stack_trace):
 
     if "net::ERR" in text or "ECONNREFUSED" in text:
         return {
+            "category": "Network",
             "root_cause": "The application/server was not reachable during the test run.",
+            "expected_result": (
+                "The dummy-app dev server should have been running and reachable, "
+                "so the page could load normally."
+            ),
             "severity": "critical",
             "confidence": 90,
             "suggested_fix": (
@@ -237,7 +252,9 @@ def analyze_failure(error_message, stack_trace):
         }
 
     return {
+        "category": "General",
         "root_cause": "Unclassified failure - manual review needed.",
+        "expected_result": "The test should have completed its steps without error.",
         "severity": "medium",
         "confidence": 20,
         "suggested_fix": "Review the full error message and stack trace manually.",
@@ -270,7 +287,7 @@ def write_markdown_report(total, passed, failed, skipped, failures):
             if len(error_message) > 500:
                 error_message = error_message[:500] + "... (truncated)"
 
-            lines.append(f"### {i}. {f['title']} ({f['project']})")
+            lines.append(f"### {i}. {f['title']} ({f['project']}) [{f['category']}]")
             lines.append("")
             lines.append(f"- **Error:** {error_message}")
             lines.append(f"- **Root cause:** {f['root_cause']}")
