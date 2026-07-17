@@ -218,9 +218,14 @@ def push_screenshot(screenshot_path, pat, test_name, browser):
 
 
 def find_existing_issue(title_tag, pat):
-    """Check ISSUE_OWNER/ISSUE_REPO for an already-filed issue whose title
-    ends with this exact "[Test Failure] <test> (<browser>)" tag (state=all,
-    so a closed one still counts as "already logged").
+    """Check ISSUE_OWNER/ISSUE_REPO for an already-filed OPEN issue whose
+    title ends with this exact "[Test Failure] <test> (<browser>)" tag.
+
+    Only open issues count as "already logged" -- a closed issue means the
+    bug was previously fixed/resolved, so if the same test fails again
+    later, that's treated as a fresh occurrence worth its own new issue
+    (with the current title/body format) rather than reopening or
+    commenting on old, already-closed history.
 
     Matching on the tag suffix -- not the full title -- means the
     human-readable, root-cause-based prefix (e.g. "[Network] ...") can
@@ -228,11 +233,11 @@ def find_existing_issue(title_tag, pat):
     tag itself is still deterministic per test+browser.
 
     Returns the matching issue's REST JSON (has 'number', 'node_id',
-    'html_url', etc.), or None if this test hasn't failed before.
+    'html_url', etc.), or None if there's no open issue for this test.
     """
     response = requests.get(
         f"{GITHUB_API}/repos/{ISSUE_OWNER}/{ISSUE_REPO}/issues",
-        params={"state": "all", "per_page": 100},
+        params={"state": "open", "per_page": 100},
         headers={
             "Authorization": f"Bearer {pat}",
             "Accept": "application/vnd.github+json",
