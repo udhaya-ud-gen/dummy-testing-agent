@@ -61,6 +61,7 @@ def main():
                 t["project"],
                 t["error_message"] or "(no error message captured)",
                 screenshot_abs,
+                stack_trace=t["stack_trace"],
             )
         else:
             print(

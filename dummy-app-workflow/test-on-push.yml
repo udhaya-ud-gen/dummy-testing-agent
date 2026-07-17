@@ -6,6 +6,7 @@
 # Playwright suite from dummy-testing-agent against it, and (via
 # run_pipeline.py) files a GitHub issue + "Testing log" project entry for
 # each failing test.
+
 name: Test on push
 
 on:
@@ -48,10 +49,14 @@ jobs:
         run: npm install
 
       - name: Start dummy-app dev server
-        # Backgrounded so this step returns immediately and the workflow can
-        # move on to the readiness check below, instead of blocking on the
-        # long-running dev server process.
-        run: npm run dev &
+        # nohup + disown + redirect-to-file makes the server survive past
+        # this step's shell exiting. A plain "npm run dev &" can get its
+        # process group cleaned up by the runner once this step finishes,
+        # which is why the readiness check below can pass once and the
+        # actual test run can still hit ERR_CONNECTION_REFUSED later.
+        run: |
+          nohup npm run dev > /tmp/dummy-app-dev.log 2>&1 &
+          disown
 
       - name: Wait for dummy-app to be reachable
         run: |
@@ -64,6 +69,8 @@ jobs:
             sleep 2
           done
           echo "dummy-app did not become reachable in time" >&2
+          echo "--- dev server log ---" >&2
+          cat /tmp/dummy-app-dev.log >&2 || true
           exit 1
 
       # --- Run the Playwright suite + failure analysis (testing-agent) ----
@@ -83,6 +90,28 @@ jobs:
       - name: Install Python dependencies
         working-directory: testing-agent
         run: pip install requests
+
+      # Must run before "Run tests and log failures" -- that step's
+      # run_pipeline.py does `git commit` to push screenshot evidence, and
+      # a fresh runner has no configured git identity by default.
+      - name: Configure git identity
+        working-directory: testing-agent
+        run: |
+          git config --global user.email "agent@dummy-testing.local"
+          git config --global user.name "Testing Agent Bot"
+
+      - name: Verify dummy-app is still reachable before testing
+        # Cheap sanity check right before the suite runs, so if the server
+        # died between the readiness check and here, the log makes that
+        # obvious instead of surfacing as 12 generic connection-refused
+        # test failures.
+        run: |
+          if ! curl -s http://localhost:5173 > /dev/null; then
+            echo "dummy-app is no longer reachable right before testing" >&2
+            cat /tmp/dummy-app-dev.log >&2 || true
+            exit 1
+          fi
+          echo "dummy-app still up, proceeding to tests"
 
       - name: Run tests and log failures
         working-directory: testing-agent
