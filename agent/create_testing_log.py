@@ -43,6 +43,7 @@ Usage (as a library, e.g. from run_pipeline.py):
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,11 +71,11 @@ PROJECT_NUMBER = 1
 STATUS_FIELD_NAME = "Status"
 STATUS_OPTION_NAME = "Testing log"
 
-# Every issue this script creates carries a "[Test Failure] <test> (<browser>)"
-# suffix in the title (see _build_issue_title). find_existing_issue matches
-# on that suffix so a re-run's cleaner, category-prefixed title still finds
-# the original issue instead of filing a duplicate.
-TITLE_TAG_TEMPLATE = "[Test Failure] {test_name} ({browser})"
+# Every issue this script creates has a title fully determined by
+# test_name + browser + the rule-based category/target-element extraction
+# (see _build_issue_title). Because that's deterministic for the same
+# underlying bug, find_existing_issue can match on the exact title instead
+# of needing a separate hidden tag.
 
 LABEL_AUTOMATED = "Bug : Automated test"
 LABEL_LOCAL = "Bug : Local test"
@@ -217,20 +218,18 @@ def push_screenshot(screenshot_path, pat, test_name, browser):
     return raw_url
 
 
-def find_existing_issue(title_tag, pat):
-    """Check ISSUE_OWNER/ISSUE_REPO for an already-filed OPEN issue whose
-    title ends with this exact "[Test Failure] <test> (<browser>)" tag.
+def find_existing_issue(title, pat):
+    """Check ISSUE_OWNER/ISSUE_REPO for an already-filed OPEN issue with
+    this exact title. Titles are now fully deterministic from
+    test_name + browser + the rule-based category/target-element
+    extraction (see _build_issue_title), so an exact match reliably means
+    "this same test, failing the same way, already has an open issue" --
+    no separate hidden tag is needed.
 
     Only open issues count as "already logged" -- a closed issue means the
     bug was previously fixed/resolved, so if the same test fails again
     later, that's treated as a fresh occurrence worth its own new issue
-    (with the current title/body format) rather than reopening or
-    commenting on old, already-closed history.
-
-    Matching on the tag suffix -- not the full title -- means the
-    human-readable, root-cause-based prefix (e.g. "[Network] ...") can
-    change between runs without breaking duplicate detection, since the
-    tag itself is still deterministic per test+browser.
+    rather than reopening or commenting on old, already-closed history.
 
     Returns the matching issue's REST JSON (has 'number', 'node_id',
     'html_url', etc.), or None if there's no open issue for this test.
@@ -252,7 +251,7 @@ def find_existing_issue(title_tag, pat):
         # The issues-list endpoint also returns pull requests; skip those.
         if "pull_request" in issue:
             continue
-        if issue.get("title", "").endswith(title_tag):
+        if issue.get("title") == title:
             return issue
     return None
 
@@ -448,24 +447,55 @@ def _first_line(text, fallback):
     return fallback
 
 
-def _build_issue_title(test_name, browser, analysis):
-    """Build a title that tells you what's actually wrong at a glance,
-    instead of just repeating the test name. The "[Test Failure] <test>
-    (<browser>)" tag is still appended at the end (see TITLE_TAG_TEMPLATE)
-    so find_existing_issue's suffix match keeps working across runs even
-    if the human-readable prefix text changes.
+def _extract_target_element(error_message):
+    """Pull the specific locator/element name Playwright was waiting for
+    out of the error text, e.g. "waiting for getByTestId('login-button')"
+    -> "login-button". Used to make titles specific to what actually
+    failed instead of a generic category phrase repeated on every issue.
+
+    Returns None if no such pattern is found (falls back to a generic
+    phrase in _build_issue_title).
     """
-    tag = TITLE_TAG_TEMPLATE.format(test_name=test_name, browser=browser)
+    if not error_message:
+        return None
+    match = re.search(r"getBy\w+\(['\"]([^'\"]+)['\"]\)", error_message)
+    if match:
+        return match.group(1)
+    match = re.search(r"(?:locator|selector)\(['\"]([^'\"]+)['\"]\)", error_message)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _build_issue_title(test_name, browser, error_message, analysis):
+    """Build a plain-text title (no bracket tags, no browser name) that's
+    specific to what actually failed, not a boilerplate phrase repeated on
+    every issue:
+
+      - Network failures -> "app server was unreachable"
+      - UI timeouts       -> "'<element>' did not appear in time" when the
+                              specific element/locator can be extracted
+                              from the error, otherwise a generic fallback
+      - Everything else   -> a generic unclassified-failure phrase
+
+    `browser` is accepted but intentionally left out of the title text --
+    it's still recorded in the issue body. Note this means if the same
+    test is ever run across multiple browsers again, a failure on a second
+    browser will be treated as a re-occurrence (comment) on the first
+    browser's issue rather than getting its own, since the title -- now
+    the sole match key -- no longer distinguishes them.
+    """
     category = analysis["category"]
 
     if category == "Network":
-        prefix = "App server unreachable"
+        reason = "app server was unreachable"
     elif category == "UI":
-        prefix = "Expected element not found / timed out"
+        target = _extract_target_element(error_message)
+        reason = f"'{target}' did not appear in time" if target else "expected element did not appear in time"
     else:
-        prefix = "Unclassified failure"
+        reason = "failed for an unclassified reason"
 
-    return f"[{category}] {prefix} - {tag}"
+    return f"{test_name} - {reason}"
 
 
 def _build_new_issue_body(test_name, browser, error_message, stack_trace, screenshot_url, analysis):
@@ -506,12 +536,12 @@ def _build_new_issue_body(test_name, browser, error_message, stack_trace, screen
     )
 
 
-def _build_reoccurrence_comment(error_message, screenshot_url):
+def _build_reoccurrence_comment(test_name, browser, error_message, screenshot_url):
     """Compose the comment body posted on an existing issue when the same
     test fails again. Includes the fresh error text (not just "same error
     reproduced") plus the new screenshot, so each re-occurrence is
     self-explanatory without having to scroll back to the original issue
-    body.
+    body. Also restates the browser, since the title no longer shows it.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
     commit = _get_short_sha()
@@ -520,7 +550,8 @@ def _build_reoccurrence_comment(error_message, screenshot_url):
     return (
         f"### Re-occurred\n"
         f"**Time:** {timestamp}\n"
-        f"**Commit:** {commit}\n\n"
+        f"**Commit:** {commit}\n"
+        f"**Browser:** {browser}\n\n"
         f"### Actual Result\n"
         f"{actual_result}\n\n"
         f"### Error Detail\n"
@@ -547,10 +578,9 @@ def create_testing_log(test_name, browser, error_message, screenshot_path, stack
     pat = _get_pat()
     analysis = analyze_failure(error_message, stack_trace)
     label = _get_label_for_run()
-    title_tag = TITLE_TAG_TEMPLATE.format(test_name=test_name, browser=browser)
-    title = _build_issue_title(test_name, browser, analysis)
+    title = _build_issue_title(test_name, browser, error_message, analysis)
 
-    print(f"[create_testing_log] Logging failure: {title_tag} (label: {label})")
+    print(f"[create_testing_log] Logging failure: {title} (label: {label})")
 
     try:
         screenshot_url = push_screenshot(screenshot_path, pat, test_name, browser)
@@ -559,7 +589,7 @@ def create_testing_log(test_name, browser, error_message, screenshot_path, stack
         return None
 
     try:
-        existing_issue = find_existing_issue(title_tag, pat)
+        existing_issue = find_existing_issue(title, pat)
     except Exception as exc:
         print(f"[create_testing_log] ERROR checking for existing issues: {exc}", file=sys.stderr)
         return None
@@ -570,7 +600,7 @@ def create_testing_log(test_name, browser, error_message, screenshot_path, stack
     if existing_issue is not None:
         print(f"[create_testing_log] Found existing issue #{existing_issue['number']} -- treating as a re-occurrence.")
         try:
-            comment_body = _build_reoccurrence_comment(error_message, screenshot_url)
+            comment_body = _build_reoccurrence_comment(test_name, browser, error_message, screenshot_url)
             add_comment_to_issue(existing_issue["number"], comment_body, pat)
             add_label_to_issue(existing_issue["number"], label, pat)
         except Exception as exc:
