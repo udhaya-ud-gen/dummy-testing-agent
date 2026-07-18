@@ -13,7 +13,11 @@ import { defineConfig, devices } from '@playwright/test';
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
-  testDir: './projects/dummy-app/tests',
+  // TEST_DIR and APP_PORT come from the workflow file's top-level `env:`
+  // block (see dummy-app-workflow/test-on-push.yml) -- this is what lets
+  // the same config work for any app's tests, not just dummy-app. The
+  // fallbacks below only matter for running locally without those set.
+  testDir: process.env.TEST_DIR || './projects/dummy-app/tests',
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -26,7 +30,7 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-  baseURL: 'http://localhost:5173',
+  baseURL: process.env.APP_PORT ? `http://localhost:${process.env.APP_PORT}` : 'http://localhost:5173',
   trace: 'on-first-retry',
   screenshot: 'only-on-failure',
 },
@@ -78,4 +82,3 @@ export default defineConfig({
   //   reuseExistingServer: !process.env.CI,
   // },
 });
-

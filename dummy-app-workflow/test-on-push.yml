@@ -20,6 +20,20 @@ permissions:
   contents: write
   issues: write
 
+# ============================================================================
+# CONFIGURE THESE FOR YOUR APP -- this is the only section that should need
+# to change when reusing this workflow for a different project. Everything
+# below this block reads from these values instead of being hardcoded.
+# ============================================================================
+env:
+  APP_START_COMMAND: "npm run dev"     # how your app's dev server is started
+  APP_PORT: "5173"                     # port it listens on (Vite default shown)
+  TEST_DIR: "projects/dummy-app/tests" # this app's own Playwright tests folder
+  ISSUE_OWNER: "udhaya-ud-gen"         # GitHub user/org the issue repo lives under
+  ISSUE_REPO: "dummy-app"              # repo failures get filed as Issues in
+  PROJECT_OWNER: "udhaya-ud-gen"       # user/org that owns the GitHub Project (board)
+  PROJECT_NUMBER: "1"                  # the Project's number (from its URL)
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -55,13 +69,13 @@ jobs:
         # which is why the readiness check below can pass once and the
         # actual test run can still hit ERR_CONNECTION_REFUSED later.
         run: |
-          nohup npm run dev > /tmp/dummy-app-dev.log 2>&1 &
+          nohup ${{ env.APP_START_COMMAND }} > /tmp/dummy-app-dev.log 2>&1 &
           disown
 
       - name: Wait for dummy-app to be reachable
         run: |
           for i in $(seq 1 30); do
-            if curl -s http://localhost:5173 > /dev/null; then
+            if curl -s http://localhost:${{ env.APP_PORT }} > /dev/null; then
               echo "dummy-app is up (attempt $i)"
               exit 0
             fi
@@ -106,7 +120,7 @@ jobs:
         # obvious instead of surfacing as 12 generic connection-refused
         # test failures.
         run: |
-          if ! curl -s http://localhost:5173 > /dev/null; then
+          if ! curl -s http://localhost:${{ env.APP_PORT }} > /dev/null; then
             echo "dummy-app is no longer reachable right before testing" >&2
             cat /tmp/dummy-app-dev.log >&2 || true
             exit 1
